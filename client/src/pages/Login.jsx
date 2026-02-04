@@ -47,7 +47,7 @@ function Login() {
               />
             </svg>
           </div>
-          <h1 className="text-3xl font-bold text-gray-900 mb-2">LLM Chat Portal</h1>
+          <h1 className="text-3xl font-bold text-gray-900 mb-2">Genie Portal</h1>
           <p className="text-gray-600">Sign in to access the AI assistant</p>
         </div>
 
