@@ -37,7 +37,7 @@ function ChatInput({ onSend, disabled }) {
             value={message}
             onChange={(e) => setMessage(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Message LLM Portal..."
+            placeholder="Message Genie Portal..."
             disabled={disabled}
             rows={1}
             className="flex-1 bg-transparent px-4 py-3 pr-12 resize-none focus:outline-none max-h-[200px] text-gray-900 placeholder-gray-500"
