@@ -12,6 +12,7 @@ const passport = require('./config/passport');
 const authRoutes = require('./routes/auth');
 const chatRoutes = require('./routes/chat');
 const adminRoutes = require('./routes/admin');
+const rssRoutes = require('./routes/rss');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -55,6 +56,7 @@ app.use(passport.session());
 app.use('/auth', authRoutes);
 app.use('/api/chat', chatRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/rss', rssRoutes);
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {

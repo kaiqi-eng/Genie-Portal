@@ -82,10 +82,24 @@ router.post('/conversations/:id/messages', async (req, res) => {
       content: message,
     });
 
-    // Get LLM response
+    // Fetch conversation history for context
+    const previousMessages = await Message.findAll({
+      where: { conversationId: conversation.id },
+      order: [['created_at', 'ASC']],
+      attributes: ['role', 'content'],
+    });
+
+    // Convert to the {role, content} format the LLM expects
+    const conversationHistory = previousMessages.map((msg) => ({
+      role: msg.role,
+      content: msg.content,
+    }));
+
+    // Get LLM response with full conversation context
     const llmResponse = await llmService.sendMessage(
       `verified_user_${req.user.id}`,
-      message
+      message,
+      { conversationHistory }
     );
 
     // Save assistant message
