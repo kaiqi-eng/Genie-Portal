@@ -42,7 +42,7 @@ services:
         value: https://genie-portal-client.onrender.com
 
   # Frontend static site
-  - type: static_site
+  - type: static
     name: genie-portal-client
     rootDir: client
     buildCommand: npm install && npm run build
