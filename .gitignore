@@ -40,3 +40,6 @@ coverage/
 
 # PostgreSQL data (Docker volume)
 postgres_data/
+
+# Local tooling binaries
+.tools/
