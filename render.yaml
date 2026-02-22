@@ -47,6 +47,10 @@ services:
     name: genie-portal-client
     buildCommand: cd client && npm install && npm run build
     staticPublishPath: ./client/dist
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
     pullRequestPreviewsEnabled: true
     envVars:
       - key: VITE_API_BASE_URL
