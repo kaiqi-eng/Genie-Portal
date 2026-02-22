@@ -27,6 +27,9 @@ app.use(cors({
   origin: process.env.CLIENT_URL || 'http://localhost:5173',
   credentials: true,
 }));
+// Some webhook providers send malformed JSON-like bodies (e.g. unescaped newlines in strings).
+// Parse callback requests as raw text so the callback route can recover payload safely.
+app.use('/api/chat/webhook/callback', express.text({ type: '*/*', limit: '2mb' }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 

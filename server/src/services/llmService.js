@@ -1,350 +1,308 @@
 const axios = require('axios');
-const rssService = require('./rssService');
+const fs = require('fs');
+const path = require('path');
+const dotenv = require('dotenv');
+const { WebhookUser } = require('../models');
 
-// OpenRouter configuration
-const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
-const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'arcee-ai/trinity-large-preview:free';
-const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1/chat/completions';
-
-/**
- * Available tools that the LLM can use
- */
-const AVAILABLE_TOOLS = [
-  {
-    name: 'fetch_rss',
-    description: 'Fetch RSS feed from a website URL. If the website has an RSS feed, it will be discovered and parsed. If no RSS feed exists, one will be generated from the page content.',
-    parameters: {
-      type: 'object',
-      properties: {
-        url: {
-          type: 'string',
-          description: 'The website URL to fetch RSS from (e.g., "https://example.com" or "techcrunch.com")',
-        },
-      },
-      required: ['url'],
-    },
-  },
+const LATENODE_WEBHOOK_URL = 'https://webhook.latenode.com/88477/dev/genieslackorigin';
+const ENV_FILE_PATH = path.resolve(__dirname, '../../.env');
+const ASYNC_LOG_PREFIX = '[Webhook Async]';
+const UNSUPPORTED_CALLBACK_HOST_PATTERNS = [
+  /(^|\.)loca\.lt$/i,
+  /(^|\.)localtunnel\.me$/i,
+];
+const M2M_TUNNEL_HOST_PATTERNS = [
+  /(^|\.)trycloudflare\.com$/i,
+  /(^|\.)ngrok-free\.app$/i,
+  /(^|\.)ngrok\.io$/i,
 ];
 
-// ─── Low-level OpenRouter helper ────────────────────────────────────────────
-
-/**
- * Send a chat completion request to OpenRouter
- * @param {Array} messages - Array of {role, content} message objects
- * @returns {Promise<string>} - The assistant's reply content
- */
-const callOpenRouter = async (messages) => {
-  const response = await axios.post(
-    OPENROUTER_BASE_URL,
-    {
-      model: OPENROUTER_MODEL,
-      messages,
-    },
-    {
-      headers: {
-        'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
-        'Content-Type': 'application/json',
-        'HTTP-Referer': process.env.CLIENT_URL || 'http://localhost:5173',
-      },
-      timeout: 60000,
-    },
-  );
-
-  const choice = response.data?.choices?.[0];
-  if (!choice?.message?.content) {
-    throw new Error('Empty response from OpenRouter');
-  }
-  return choice.message.content;
-};
-
-// ─── Step 1: Planning – ask the LLM which URLs to fetch ─────────────────────
-
-const PLANNING_SYSTEM_PROMPT = `You are a helpful assistant with the ability to fetch RSS feeds from websites.
-
-When the user sends a message, decide whether fetching RSS feeds from one or more websites would help you give a better answer.
-
-You MUST respond with ONLY a JSON object in the following format — no other text:
-{"urls": ["https://example.com", "https://other-site.com"]}
-
-Rules:
-- If the query would benefit from real-time news or content from specific websites, include those website URLs.
-- If the query is general conversation or does not need any RSS data, return an empty array: {"urls": []}
-- Return full base URLs (e.g. "https://techcrunch.com"), not RSS feed URLs — the system will discover the feed automatically.
-- Return at most 5 URLs.`;
-
-/**
- * Step 1 – Ask the LLM which websites (if any) it wants RSS from
- * @param {string} userMessage - The user's message
- * @param {Array} conversationHistory - Previous messages [{role, content}, ...]
- * @returns {Promise<string[]>} - Array of URLs to fetch RSS from (may be empty)
- */
-const planRssFetches = async (userMessage, conversationHistory = []) => {
-  const messages = [
-    { role: 'system', content: PLANNING_SYSTEM_PROMPT },
-    ...conversationHistory,
-  ];
-
-  // Only add the current user message if it's not already the last message in history
-  const lastMsg = conversationHistory[conversationHistory.length - 1];
-  if (!lastMsg || lastMsg.role !== 'user' || lastMsg.content !== userMessage) {
-    messages.push({ role: 'user', content: userMessage });
-  }
-
-  const reply = await callOpenRouter(messages);
-
-  // Extract JSON from the reply (handle cases where the LLM wraps it in markdown)
-  const jsonMatch = reply.match(/\{[\s\S]*"urls"[\s\S]*\}/);
-  if (!jsonMatch) {
-    console.warn('Planning step returned non-JSON response, assuming no URLs needed:', reply);
-    return [];
-  }
-
+const getLiveEnvValue = (key) => {
   try {
-    const parsed = JSON.parse(jsonMatch[0]);
-    if (Array.isArray(parsed.urls)) {
-      // Sanitise: only keep strings, limit to 5
-      return parsed.urls.filter((u) => typeof u === 'string').slice(0, 5);
+    const raw = fs.readFileSync(ENV_FILE_PATH, 'utf8');
+    const parsed = dotenv.parse(raw);
+    return parsed[key];
+  } catch (error) {
+    return undefined;
+  }
+};
+
+const getPortalCallbackUrl = () => {
+  const explicitUrl = getLiveEnvValue('PORTAL_CALLBACK_URL') || process.env.PORTAL_CALLBACK_URL;
+  if (explicitUrl) return explicitUrl;
+
+  const publicBaseUrl = getLiveEnvValue('PUBLIC_BASE_URL') || process.env.PUBLIC_BASE_URL;
+  if (publicBaseUrl) {
+    return `${publicBaseUrl.replace(/\/$/, '')}/api/chat/webhook/callback`;
+  }
+
+  return 'http://localhost:3001/api/chat/webhook/callback';
+};
+
+const validateCallbackHost = (callbackUrl) => {
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(callbackUrl);
+  } catch (error) {
+    throw new Error(`Invalid callback URL: ${callbackUrl}`);
+  }
+
+  if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
+    throw new Error(`Unsupported callback protocol: ${parsedUrl.protocol}`);
+  }
+
+  const hostname = parsedUrl.hostname.toLowerCase();
+  const blockedHostPattern = UNSUPPORTED_CALLBACK_HOST_PATTERNS.find((pattern) => pattern.test(hostname));
+  if (blockedHostPattern) {
+    throw new Error(
+      `Unsupported callback tunnel host "${hostname}". Use cloudflared/ngrok without protection layers.`
+    );
+  }
+
+  return parsedUrl;
+};
+
+const isMachineToMachineTunnelHost = (hostname) => (
+  M2M_TUNNEL_HOST_PATTERNS.some((pattern) => pattern.test(hostname))
+);
+
+const validateLocalCallbackHealth = async (parsedCallbackUrl) => {
+  const localPort = getLiveEnvValue('PORT') || process.env.PORT || '3001';
+  const localCallbackUrl = `http://127.0.0.1:${localPort}${parsedCallbackUrl.pathname}${parsedCallbackUrl.search}`;
+  const response = await axios.get(localCallbackUrl, {
+    timeout: 10000,
+    validateStatus: () => true,
+  });
+
+  if (response.status < 200 || response.status >= 300) {
+    throw new Error(`Local callback health check failed with status ${response.status}`);
+  }
+
+  const status = response.data?.status;
+  if (status !== 'callback-ready') {
+    throw new Error(
+      `Local callback health check returned unexpected body. Expected status="callback-ready", got "${status || 'unknown'}"`
+    );
+  }
+};
+
+const validateCallbackHealth = async (parsedCallbackUrl) => {
+  const callbackUrl = parsedCallbackUrl.toString();
+  const response = await axios.get(callbackUrl, {
+    timeout: 10000,
+    validateStatus: () => true,
+  });
+
+  if (response.status >= 200 && response.status < 300) {
+    const status = response.data?.status;
+    if (status !== 'callback-ready') {
+      throw new Error(
+        `Callback health check returned unexpected body. Expected status="callback-ready", got "${status || 'unknown'}"`
+      );
     }
-  } catch (err) {
-    console.warn('Failed to parse planning response JSON:', err.message);
+    return { mode: 'public' };
   }
 
-  return [];
+  const hostname = parsedCallbackUrl.hostname.toLowerCase();
+  if (response.status === 403 && isMachineToMachineTunnelHost(hostname)) {
+    console.warn(`${ASYNC_LOG_PREFIX} phase=callback_healthcheck_public_blocked`, {
+      callbackUrl,
+      status: response.status,
+      fallback: 'local',
+    });
+    await validateLocalCallbackHealth(parsedCallbackUrl);
+    return { mode: 'local_fallback' };
+  }
+
+  throw new Error(`Callback health check failed with status ${response.status}`);
 };
 
-// ─── Step 2: Fetch all requested RSS feeds in parallel ──────────────────────
+const extractWebhookReply = (data) => {
+  if (typeof data === 'string') {
+    return data;
+  }
+
+  if (data && typeof data === 'object') {
+    return data.reply || data.response || data.message || JSON.stringify(data);
+  }
+
+  return '';
+};
+
+
+const WEBHOOK_CONSTANT_PACKET = {
+  body: {
+    api_app_id: 'A0AEL4QQFPA',
+    channel_id: 'C0AEL7U2X32',
+    channel_name: 'bot-channel',
+    command: '/askgenieportal',
+    is_enterprise_install: 'false',
+    response_url: 'https://hooks.slack.com/commands/T0A9A0BEK0B/10565544043232/53b5upnXGY42N2azc4M6rncK',
+    team_domain: 'bayshorizonnetwork',
+    team_id: 'T0A9A0BEK0B',
+    text: '',
+    token: '4Bidj759IPMikzhUloAE6pce',
+    trigger_id: '10537267003346.10316011495011.73c3febc5ef91a2323ef2626666a8d15',
+    user_id: '',
+    user_name: 'onya321800',
+    portal_callback_url: '',
+  },
+  client_ip: '',
+  headers: {
+    Accept: 'application/json,*/*',
+    'Accept-Encoding': 'gzip, br',
+    'Cdn-Loop': 'cloudflare; loops=1',
+    'Cf-Connecting-Ip': '44.214.100.201',
+    'Cf-Ipcity': 'Ashburn',
+    'Cf-Ipcontinent': 'NA',
+    'Cf-Ipcountry': 'US',
+    'Cf-Iplatitude': '39.04372',
+    'Cf-Iplongitude': '-77.48749',
+    'Cf-Metro-Code': '511',
+    'Cf-Postal-Code': '20147',
+    'Cf-Ray': '9d00b6a369b01877-IAD',
+    'Cf-Region': 'Virginia',
+    'Cf-Region-Code': 'VA',
+    'Cf-Timezone': 'America/New_York',
+    'Cf-Visitor': '{"scheme":"https"}',
+    'Content-Length': '473',
+    'Content-Type': 'application/x-www-form-urlencoded',
+    'True-Client-Ip': '44.214.100.201',
+    'User-Agent': 'Slackbot 1.0 (+https://api.slack.com/robots)',
+    'X-Forwarded-For': '44.214.100.201',
+    'X-Forwarded-Host': 'webhook.latenode.com',
+    'X-Forwarded-Port': '443',
+    'X-Forwarded-Proto': 'https',
+    'X-Forwarded-Scheme': 'https',
+    'X-Original-Forwarded-For': '44.214.100.201',
+    'X-Real-Ip': '44.214.100.201',
+    'X-Request-Id': '6da5e9f1f4a044bc8bcf72c09af42171',
+    'X-Scheme': 'https',
+    'X-Slack-Request-Timestamp': '1771451146',
+    'X-Slack-Signature': 'v0=884781d803d7b22675471cdaabce9512ecbd162c5dc28a5a32a9b1228011bbd5',
+  },
+  method: 'POST',
+  query: {},
+  url: 'http://',
+};
 
 /**
- * Execute RSS fetch for a single URL
- * @param {string} url - Website URL
- * @returns {Promise<Object>} - RSS feed data
+ * Save or update user mapping by email and return the persisted user ID.
+ *
+ * @param {string} email - Email address key
+ * @param {string} userId - User ID value to store
+ * @returns {Promise<string>} - Persisted user ID for this email
  */
-const executeRssFetch = async (url) => {
-  const result = await rssService.getRssFeed(url);
-  return {
-    success: true,
-    url,
-    source: result.source,
-    feedUrl: result.feedUrl,
-    feedTitle: result.feed.title,
-    feedDescription: result.feed.description,
-    itemCount: result.feed.items.length,
-    items: result.feed.items.slice(0, 10).map((item) => ({
-      title: item.title,
-      link: item.link,
-      description: item.description?.substring(0, 200),
-      pubDate: item.pubDate,
-      author: item.author,
-    })),
-  };
+const persistUserIdByEmail = async (email, userId) => {
+  const existing = await WebhookUser.findOne({ where: { email } });
+  if (existing?.userId) {
+    return existing.userId;
+  }
+
+  await WebhookUser.create({ email, userId });
+  return userId;
 };
 
 /**
- * Fetch RSS feeds for all URLs in parallel and return formatted context
- * @param {string[]} urls - Array of website URLs
- * @returns {Promise<{rssContext: string, toolResults: Array}>} - Formatted RSS text and raw results
- */
-const fetchAllRssFeeds = async (urls) => {
-  if (!urls || urls.length === 0) {
-    return { rssContext: '', toolResults: [] };
-  }
-
-  const settled = await Promise.allSettled(
-    urls.map((url) => executeRssFetch(url)),
-  );
-
-  const toolResults = [];
-
-  for (let i = 0; i < settled.length; i++) {
-    const outcome = settled[i];
-    if (outcome.status === 'fulfilled') {
-      toolResults.push({ name: 'fetch_rss', url: urls[i], result: outcome.value });
-    } else {
-      toolResults.push({
-        name: 'fetch_rss',
-        url: urls[i],
-        result: { success: false, url: urls[i], error: outcome.reason?.message || 'Unknown error' },
-      });
-    }
-  }
-
-  // Format results into readable text for the final LLM context
-  const rssContext = formatToolResults(toolResults);
-  return { rssContext, toolResults };
-};
-
-/**
- * Format tool results into readable text
- * @param {Array} toolResults - Results from tool executions
- * @returns {string} - Formatted string for LLM context
- */
-const formatToolResults = (toolResults) => {
-  return toolResults
-    .map((entry) => {
-      const r = entry.result;
-      if (r.success) {
-        let formatted = `\n--- RSS Feed: ${r.feedTitle} (${r.url}) ---\n`;
-        formatted += `Source: ${r.source === 'discovered' ? 'Found existing feed' : 'Generated from page'}\n`;
-        if (r.feedUrl) formatted += `Feed URL: ${r.feedUrl}\n`;
-        formatted += `Description: ${r.feedDescription}\n`;
-        formatted += `Total Items: ${r.itemCount}\n\n`;
-        formatted += `Latest Articles:\n`;
-
-        r.items.forEach((item, i) => {
-          formatted += `${i + 1}. ${item.title}\n`;
-          formatted += `   Link: ${item.link}\n`;
-          if (item.pubDate) formatted += `   Date: ${item.pubDate}\n`;
-          if (item.description) formatted += `   Summary: ${item.description}...\n`;
-          formatted += '\n';
-        });
-
-        return formatted;
-      }
-
-      return `\n--- RSS Feed Error (${entry.url}) ---\nFailed to fetch: ${r.error}\n`;
-    })
-    .join('\n');
-};
-
-// ─── Step 3: Final response with RSS context ────────────────────────────────
-
-const FINAL_SYSTEM_PROMPT = `You are a helpful assistant. Answer the user's question thoroughly.
-
-If RSS feed data is provided below, use it to inform your answer with the latest content from those sources. Cite specific articles when relevant. If no RSS data is provided, answer based on your own knowledge.`;
-
-/**
- * Step 3 – Send the user's message + RSS context to the LLM for a final answer
- * @param {string} userMessage - The original user message
- * @param {string} rssContext - Formatted RSS feed data (may be empty)
- * @param {Array} conversationHistory - Previous messages [{role, content}, ...]
- * @returns {Promise<string>} - The final assistant reply
- */
-const generateFinalResponse = async (userMessage, rssContext, conversationHistory = []) => {
-  let systemContent = FINAL_SYSTEM_PROMPT;
-  if (rssContext) {
-    systemContent += `\n\nHere is the RSS feed data that was retrieved:\n${rssContext}`;
-  }
-
-  const messages = [
-    { role: 'system', content: systemContent },
-    ...conversationHistory,
-  ];
-
-  // Only add the current user message if it's not already the last message in history
-  const lastMsg = conversationHistory[conversationHistory.length - 1];
-  if (!lastMsg || lastMsg.role !== 'user' || lastMsg.content !== userMessage) {
-    messages.push({ role: 'user', content: userMessage });
-  }
-
-  const reply = await callOpenRouter(messages);
-
-  return reply;
-};
-
-// ─── Orchestrator ───────────────────────────────────────────────────────────
-
-/**
- * Send a message through the agent workflow:
- *   1. Ask the LLM which URLs need RSS fetched
- *   2. Fetch the RSS feeds in parallel
- *   3. Send the user's message + RSS data to the LLM for a final answer
+ * Send a message by posting a hardcoded packet to Latenode webhook.
+ *
+ * Only `body.text` and `body.user_id` are dynamic.
  *
  * @param {string} userId - The user's ID
  * @param {string} message - The user's message
  * @param {Object} options - Additional options
- * @returns {Promise<Object>} - The LLM response
+ * @returns {Promise<Object>} - Webhook response wrapper
  */
 const sendMessage = async (userId, message, options = {}) => {
   try {
-    // Validate API key
-    if (!OPENROUTER_API_KEY || OPENROUTER_API_KEY === 'your_openrouter_api_key_here') {
-      throw new Error('OPENROUTER_API_KEY is not configured. Set it in your .env file.');
+    if (!options.userEmail) {
+      throw new Error('userEmail is required to store user ID mapping.');
     }
 
-    const conversationHistory = options.conversationHistory || [];
+    const persistedUserId = await persistUserIdByEmail(options.userEmail, userId);
+    const callbackUrl = getPortalCallbackUrl();
+    const parsedCallbackUrl = validateCallbackHost(callbackUrl);
+    const localSessionId = `webhook_session_${Date.now()}`;
 
-    console.log(`[Agent] Step 1: Planning RSS fetches for user ${userId} (${conversationHistory.length} prior messages)...`);
-    const urls = await planRssFetches(message, conversationHistory);
-    console.log(`[Agent] Planning result: ${urls.length} URL(s) requested:`, urls);
+    console.log(`${ASYNC_LOG_PREFIX} phase=callback_url_selected`, {
+      sessionId: localSessionId,
+      callbackUrl,
+      callbackHost: parsedCallbackUrl.host,
+    });
 
-    // Step 2: Fetch RSS feeds (if any)
-    let rssContext = '';
-    let toolResults = [];
+    console.log(`${ASYNC_LOG_PREFIX} phase=callback_healthcheck_start`, {
+      sessionId: localSessionId,
+      callbackUrl,
+    });
+    const healthResult = await validateCallbackHealth(parsedCallbackUrl);
+    console.log(`${ASYNC_LOG_PREFIX} phase=callback_healthcheck_ok`, {
+      sessionId: localSessionId,
+      callbackUrl,
+      mode: healthResult.mode,
+    });
 
-    if (urls.length > 0) {
-      console.log(`[Agent] Step 2: Fetching ${urls.length} RSS feed(s) in parallel...`);
-      const rssData = await fetchAllRssFeeds(urls);
-      rssContext = rssData.rssContext;
-      toolResults = rssData.toolResults;
-      console.log(`[Agent] RSS fetch complete. ${toolResults.filter((t) => t.result.success).length}/${toolResults.length} succeeded.`);
-    } else {
-      console.log('[Agent] Step 2: Skipped (no RSS URLs requested).');
-    }
+    const packet = JSON.parse(JSON.stringify(WEBHOOK_CONSTANT_PACKET));
+    packet.body.text = message;
+    packet.body.user_id = persistedUserId;
+    packet.body.portal_callback_url = callbackUrl;
+    console.log(`${ASYNC_LOG_PREFIX} phase=webhook_send_start`, {
+      sessionId: localSessionId,
+      webhookUrl: LATENODE_WEBHOOK_URL,
+    });
 
-    // Step 3: Final LLM call with RSS context and conversation history
-    console.log('[Agent] Step 3: Generating final response...');
-    const reply = await generateFinalResponse(message, rssContext, conversationHistory);
+    // Send only the inner Slack-like body to avoid nested `body.body` at webhook receiver.
+    const response = await axios.post(LATENODE_WEBHOOK_URL, packet.body, {
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Portal-Session-Id': localSessionId,
+        'X-Portal-Callback-Url': callbackUrl,
+      },
+      timeout: 60000,
+    });
+    const rawReply = extractWebhookReply(response.data);
+    const requestId = response.headers?.['x-request-id'] || null;
+    console.log(`${ASYNC_LOG_PREFIX} phase=webhook_sent`, {
+      sessionId: localSessionId,
+      status: response.status,
+      requestId,
+    });
+
+    const reply = rawReply === 'request accepted'
+      ? `Request accepted by webhook. This endpoint is asynchronous and did not return a final chat reply in the HTTP response.${requestId ? ` (requestId: ${requestId})` : ''}`
+      : rawReply;
 
     return {
       status: 'success',
       reply,
       timestamp: new Date().toISOString(),
-      sessionId: `agent_session_${Date.now()}`,
-      toolsUsed: toolResults.filter((t) => t.result.success).map(() => 'fetch_rss'),
-      toolResults: toolResults.length > 0 ? toolResults : undefined,
+      sessionId: localSessionId,
     };
   } catch (error) {
-    console.error('Agent Workflow Error:', error.message);
+    console.error(`${ASYNC_LOG_PREFIX} phase=webhook_send_error`, {
+      message: error.message,
+      status: error.response?.status,
+      responseData: error.response?.data,
+    });
 
     return {
       status: 'error',
       reply: `I encountered an error while processing your request: ${error.message}`,
       timestamp: new Date().toISOString(),
-      sessionId: `error_session_${Date.now()}`,
+      sessionId: `webhook_error_session_${Date.now()}`,
     };
   }
 };
 
-// ─── Utility exports (preserve existing API surface) ────────────────────────
-
-/**
- * Get list of available tools
- * @returns {Array} - Available tools
- */
 const getAvailableTools = () => {
-  return AVAILABLE_TOOLS;
+  return [];
 };
 
-/**
- * Directly fetch RSS feed (for programmatic use)
- * @param {string} url - Website URL
- * @returns {Promise<Object>} - RSS feed data
- */
 const fetchRss = async (url) => {
-  try {
-    return await executeRssFetch(url);
-  } catch (error) {
-    return { success: false, error: error.message };
-  }
+  return { success: false, error: `RSS tools are disabled. URL provided: ${url}` };
 };
 
-/**
- * Execute a tool call by name
- * @param {string} toolName - Name of the tool to execute
- * @param {Object} params - Tool parameters
- * @returns {Promise<Object>} - Tool execution result
- */
 const executeTool = async (toolName, params) => {
-  switch (toolName) {
-    case 'fetch_rss':
-      try {
-        return await executeRssFetch(params.url || params);
-      } catch (error) {
-        return { success: false, error: error.message };
-      }
-    default:
-      return { error: `Unknown tool: ${toolName}` };
-  }
+  return { error: `Tool execution is disabled. Unknown tool: ${toolName}`, params };
 };
 
 module.exports = {

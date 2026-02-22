@@ -1,9 +1,23 @@
 import { useEffect, useRef } from 'react';
 import MessageBubble from './MessageBubble';
 
+const WEBHOOK_PENDING_PREFIX = 'Request accepted by webhook.';
+
 function MessageList({ messages, sending }) {
   const bottomRef = useRef(null);
   const containerRef = useRef(null);
+  const hasPendingWebhookReply = messages.some(
+    (message) => message.role === 'assistant'
+      && typeof message.content === 'string'
+      && message.content.startsWith(WEBHOOK_PENDING_PREFIX)
+  );
+  const visibleMessages = messages.filter(
+    (message) => !(
+      message.role === 'assistant'
+      && typeof message.content === 'string'
+      && message.content.startsWith(WEBHOOK_PENDING_PREFIX)
+    )
+  );
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
@@ -15,16 +29,16 @@ function MessageList({ messages, sending }) {
   return (
     <div ref={containerRef} className="h-full overflow-y-auto">
       <div className="max-w-3xl mx-auto px-4 py-6">
-        {messages.map((message, index) => (
+        {visibleMessages.map((message, index) => (
           <MessageBubble
             key={message.id || index}
             message={message}
-            isLast={index === messages.length - 1}
+            isLast={index === visibleMessages.length - 1}
           />
         ))}
 
         {/* Typing indicator */}
-        {sending && (
+        {(sending || hasPendingWebhookReply) && (
           <div className="flex gap-4 py-6">
             <div className="w-8 h-8 rounded-full bg-gray-900 flex items-center justify-center flex-shrink-0">
               <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
