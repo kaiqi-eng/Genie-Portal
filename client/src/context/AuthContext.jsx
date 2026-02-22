@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useEffect } from 'react';
-import { api } from '../services/api';
+import { api, API_BASE_URL } from '../services/api';
 
 const AuthContext = createContext(null);
 
@@ -36,7 +36,7 @@ export const AuthProvider = ({ children }) => {
   };
 
   const login = () => {
-    window.location.href = '/auth/google';
+    window.location.href = `${API_BASE_URL}/auth/google`;
   };
 
   const logout = async () => {
