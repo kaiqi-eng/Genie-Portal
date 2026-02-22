@@ -4,6 +4,10 @@ import { chatApi } from '../services/api';
 import Sidebar from '../components/Chat/Sidebar';
 import ChatContainer from '../components/Chat/ChatContainer';
 
+const WEBHOOK_PENDING_PREFIX = 'Request accepted by webhook.';
+const POLL_INTERVAL_MS = 1500;
+const POLL_MAX_ATTEMPTS = 80;
+
 function Chat() {
   const { user, logout, isAdmin } = useAuth();
   const [conversations, setConversations] = useState([]);
@@ -18,15 +22,6 @@ function Chat() {
     fetchConversations();
   }, []);
 
-  // Fetch messages when active conversation changes
-  useEffect(() => {
-    if (activeConversation) {
-      fetchMessages(activeConversation.id);
-    } else {
-      setMessages([]);
-    }
-  }, [activeConversation]);
-
   const fetchConversations = async () => {
     try {
       const response = await chatApi.getConversations();
@@ -38,17 +33,49 @@ function Chat() {
     }
   };
 
-  const fetchMessages = async (conversationId) => {
-    setMessagesLoading(true);
+  const fetchMessages = useCallback(async (conversationId, options = {}) => {
+    const { silent = false } = options;
+    if (!silent) setMessagesLoading(true);
     try {
       const response = await chatApi.getMessages(conversationId);
       setMessages(response.data);
     } catch (error) {
       console.error('Failed to fetch messages:', error);
     } finally {
-      setMessagesLoading(false);
+      if (!silent) setMessagesLoading(false);
     }
-  };
+  }, []);
+
+  // Fetch messages when active conversation changes
+  useEffect(() => {
+    if (activeConversation) {
+      fetchMessages(activeConversation.id);
+    } else {
+      setMessages([]);
+    }
+  }, [activeConversation, fetchMessages]);
+
+  // Poll while async webhook placeholders are present.
+  useEffect(() => {
+    if (!activeConversation) return undefined;
+    const hasPendingWebhookReply = messages.some(
+      (msg) => msg.role === 'assistant' && typeof msg.content === 'string'
+        && msg.content.startsWith(WEBHOOK_PENDING_PREFIX)
+    );
+    if (!hasPendingWebhookReply) return undefined;
+
+    let attempts = 0;
+    const intervalId = setInterval(() => {
+      attempts += 1;
+      fetchMessages(activeConversation.id, { silent: true });
+
+      if (attempts >= POLL_MAX_ATTEMPTS) {
+        clearInterval(intervalId);
+      }
+    }, POLL_INTERVAL_MS);
+
+    return () => clearInterval(intervalId);
+  }, [activeConversation, messages, fetchMessages]);
 
   const handleNewConversation = async () => {
     try {
