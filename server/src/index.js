@@ -47,7 +47,8 @@ app.use(session({
     secure: process.env.NODE_ENV === 'production',
     httpOnly: true,
     maxAge: 24 * 60 * 60 * 1000, // 24 hours
-    sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
+    // Use 'none' when frontend and backend are on different origins (e.g. Render)
+    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
   },
 }));
 
