@@ -16,12 +16,17 @@ router.get('/google/callback',
     failureRedirect: `${CLIENT_URL}/login?error=auth_failed`,
   }),
   (req, res) => {
-    // Check if user is approved
-    if (req.user.isApproved) {
-      res.redirect(`${CLIENT_URL}/chat`);
-    } else {
-      res.redirect(`${CLIENT_URL}/login?error=not_approved`);
-    }
+    // Ensure session is persisted before redirect (fixes race with async PG store)
+    req.session.save((err) => {
+      if (err) {
+        return res.redirect(`${CLIENT_URL}/login?error=auth_failed`);
+      }
+      if (req.user.isApproved) {
+        res.redirect(`${CLIENT_URL}/chat`);
+      } else {
+        res.redirect(`${CLIENT_URL}/login?error=not_approved`);
+      }
+    });
   }
 );
 

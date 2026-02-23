@@ -17,6 +17,9 @@ const rssRoutes = require('./routes/rss');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// Trust proxy so secure cookies work behind Render's load balancer
+app.set('trust proxy', 1);
+
 // PostgreSQL pool for session store
 const pgPool = new Pool({
   connectionString: process.env.DATABASE_URL,
