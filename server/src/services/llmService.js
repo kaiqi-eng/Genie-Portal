@@ -4,7 +4,9 @@ const path = require('path');
 const dotenv = require('dotenv');
 const { WebhookUser } = require('../models');
 
-const LATENODE_WEBHOOK_URL = 'https://webhook.latenode.com/88477/dev/genieslackorigin';
+const LATENODE_WEBHOOK_URL = 'https://webhook.latenode.com/88477/dev/genie';
+const PORTAL_ORIGIN = 'genieportal';
+const PORTAL_API_KEY = '8pclqdc0lUhMq2GohuU821OK9tc3Y1J3';
 const ENV_FILE_PATH = path.resolve(__dirname, '../../.env');
 const ASYNC_LOG_PREFIX = '[Webhook Async]';
 const UNSUPPORTED_CALLBACK_HOST_PATTERNS = [
@@ -128,64 +130,6 @@ const extractWebhookReply = (data) => {
 
   return '';
 };
-
-
-const WEBHOOK_CONSTANT_PACKET = {
-  body: {
-    api_app_id: 'A0AEL4QQFPA',
-    channel_id: 'C0AEL7U2X32',
-    channel_name: 'bot-channel',
-    command: '/askgenieportal',
-    is_enterprise_install: 'false',
-    response_url: 'https://hooks.slack.com/commands/T0A9A0BEK0B/10565544043232/53b5upnXGY42N2azc4M6rncK',
-    team_domain: 'bayshorizonnetwork',
-    team_id: 'T0A9A0BEK0B',
-    text: '',
-    token: '4Bidj759IPMikzhUloAE6pce',
-    trigger_id: '10537267003346.10316011495011.73c3febc5ef91a2323ef2626666a8d15',
-    user_id: '',
-    user_name: 'onya321800',
-    portal_callback_url: '',
-  },
-  client_ip: '',
-  headers: {
-    Accept: 'application/json,*/*',
-    'Accept-Encoding': 'gzip, br',
-    'Cdn-Loop': 'cloudflare; loops=1',
-    'Cf-Connecting-Ip': '44.214.100.201',
-    'Cf-Ipcity': 'Ashburn',
-    'Cf-Ipcontinent': 'NA',
-    'Cf-Ipcountry': 'US',
-    'Cf-Iplatitude': '39.04372',
-    'Cf-Iplongitude': '-77.48749',
-    'Cf-Metro-Code': '511',
-    'Cf-Postal-Code': '20147',
-    'Cf-Ray': '9d00b6a369b01877-IAD',
-    'Cf-Region': 'Virginia',
-    'Cf-Region-Code': 'VA',
-    'Cf-Timezone': 'America/New_York',
-    'Cf-Visitor': '{"scheme":"https"}',
-    'Content-Length': '473',
-    'Content-Type': 'application/x-www-form-urlencoded',
-    'True-Client-Ip': '44.214.100.201',
-    'User-Agent': 'Slackbot 1.0 (+https://api.slack.com/robots)',
-    'X-Forwarded-For': '44.214.100.201',
-    'X-Forwarded-Host': 'webhook.latenode.com',
-    'X-Forwarded-Port': '443',
-    'X-Forwarded-Proto': 'https',
-    'X-Forwarded-Scheme': 'https',
-    'X-Original-Forwarded-For': '44.214.100.201',
-    'X-Real-Ip': '44.214.100.201',
-    'X-Request-Id': '6da5e9f1f4a044bc8bcf72c09af42171',
-    'X-Scheme': 'https',
-    'X-Slack-Request-Timestamp': '1771451146',
-    'X-Slack-Signature': 'v0=884781d803d7b22675471cdaabce9512ecbd162c5dc28a5a32a9b1228011bbd5',
-  },
-  method: 'POST',
-  query: {},
-  url: 'http://',
-};
-
 /**
  * Save or update user mapping by email and return the persisted user ID.
  *
@@ -204,9 +148,7 @@ const persistUserIdByEmail = async (email, userId) => {
 };
 
 /**
- * Send a message by posting a hardcoded packet to Latenode webhook.
- *
- * Only `body.text` and `body.user_id` are dynamic.
+ * Send a message by posting the portal payload to the Latenode webhook.
  *
  * @param {string} userId - The user's ID
  * @param {string} message - The user's message
@@ -215,11 +157,10 @@ const persistUserIdByEmail = async (email, userId) => {
  */
 const sendMessage = async (userId, message, options = {}) => {
   try {
-    if (!options.userEmail) {
-      throw new Error('userEmail is required to store user ID mapping.');
+    const normalizedEmail = typeof options.userEmail === 'string' ? options.userEmail.trim() : '';
+    if (normalizedEmail) {
+      await persistUserIdByEmail(normalizedEmail, userId);
     }
-
-    const persistedUserId = await persistUserIdByEmail(options.userEmail, userId);
     const callbackUrl = getPortalCallbackUrl();
     const parsedCallbackUrl = validateCallbackHost(callbackUrl);
     const localSessionId = `webhook_session_${Date.now()}`;
@@ -241,17 +182,18 @@ const sendMessage = async (userId, message, options = {}) => {
       mode: healthResult.mode,
     });
 
-    const packet = JSON.parse(JSON.stringify(WEBHOOK_CONSTANT_PACKET));
-    packet.body.text = message;
-    packet.body.user_id = persistedUserId;
-    packet.body.portal_callback_url = callbackUrl;
+    const payload = {
+      Origin: PORTAL_ORIGIN,
+      text: message,
+      apikey: PORTAL_API_KEY,
+      ...(normalizedEmail ? { Email: normalizedEmail } : {}),
+    };
     console.log(`${ASYNC_LOG_PREFIX} phase=webhook_send_start`, {
       sessionId: localSessionId,
       webhookUrl: LATENODE_WEBHOOK_URL,
     });
 
-    // Send only the inner Slack-like body to avoid nested `body.body` at webhook receiver.
-    const response = await axios.post(LATENODE_WEBHOOK_URL, packet.body, {
+    const response = await axios.post(LATENODE_WEBHOOK_URL, payload, {
       headers: {
         'Content-Type': 'application/json',
         'X-Portal-Session-Id': localSessionId,
