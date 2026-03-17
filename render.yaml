@@ -33,11 +33,11 @@ services:
 
       # These depend on actual service/site hostnames
       - key: GOOGLE_CALLBACK_URL
-        value: https://genie-portal-api.onrender.com/auth/google/callback
+        value: https://genie-portal-api-v9ea.onrender.com/auth/google/callback
       - key: PUBLIC_BASE_URL
-        value: https://genie-portal-api.onrender.com
+        value: https://genie-portal-api-v9ea.onrender.com
       - key: PORTAL_CALLBACK_URL
-        value: https://genie-portal-api.onrender.com/api/chat/webhook/callback
+        value: https://genie-portal-api-v9ea.onrender.com/api/chat/webhook/callback
       - key: CLIENT_URL
         value: https://genie-portal-client.onrender.com
 
@@ -54,7 +54,7 @@ services:
     pullRequestPreviewsEnabled: true
     envVars:
       - key: VITE_API_BASE_URL
-        value: https://genie-portal-api.onrender.com
+        value: https://genie-portal-api-v9ea.onrender.com
 
 databases:
   - name: genie-portal-db
