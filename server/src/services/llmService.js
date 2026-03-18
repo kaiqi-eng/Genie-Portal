@@ -9,6 +9,7 @@ const PORTAL_ORIGIN = 'genieportal';
 const PORTAL_API_KEY = '8pclqdc0lUhMq2GohuU821OK9tc3Y1J3';
 const ENV_FILE_PATH = path.resolve(__dirname, '../../.env');
 const ASYNC_LOG_PREFIX = '[Webhook Async]';
+const WEBHOOK_PENDING_PREFIX = 'Request accepted by webhook.';
 const UNSUPPORTED_CALLBACK_HOST_PATTERNS = [
   /(^|\.)loca\.lt$/i,
   /(^|\.)localtunnel\.me$/i,
@@ -130,6 +131,27 @@ const extractWebhookReply = (data) => {
 
   return '';
 };
+
+const isAsyncAcceptedResponse = (responseStatus, responseData, rawReply) => {
+  const normalizedReply = String(rawReply || '').trim().toLowerCase();
+  const normalizedStatusField = String(responseData?.status || '').trim().toLowerCase();
+  const normalizedStateField = String(responseData?.state || '').trim().toLowerCase();
+  const normalizedResultField = String(responseData?.result || '').trim().toLowerCase();
+
+  const acceptedIndicators = [
+    normalizedReply,
+    normalizedStatusField,
+    normalizedStateField,
+    normalizedResultField,
+  ].filter(Boolean);
+
+  // Treat any accepted/queued wording as async mode so the UI can poll reliably.
+  const hasAcceptedIndicator = acceptedIndicators.some(
+    (value) => value.includes('accepted') || value.includes('queued') || value.includes('async')
+  );
+
+  return responseStatus >= 200 && responseStatus < 300 && hasAcceptedIndicator;
+};
 /**
  * Save or update user mapping by email and return the persisted user ID.
  *
@@ -209,12 +231,13 @@ const sendMessage = async (userId, message, options = {}) => {
       requestId,
     });
 
-    const reply = rawReply === 'request accepted'
-      ? `Request accepted by webhook. This endpoint is asynchronous and did not return a final chat reply in the HTTP response.${requestId ? ` (requestId: ${requestId})` : ''}`
+    const isPending = isAsyncAcceptedResponse(response.status, response.data, rawReply);
+    const reply = isPending
+      ? `${WEBHOOK_PENDING_PREFIX} This endpoint is asynchronous and did not return a final chat reply in the HTTP response.${requestId ? ` (requestId: ${requestId})` : ''}`
       : rawReply;
 
     return {
-      status: 'success',
+      status: isPending ? 'pending' : 'success',
       reply,
       timestamp: new Date().toISOString(),
       sessionId: localSessionId,
