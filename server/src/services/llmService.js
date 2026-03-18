@@ -132,6 +132,29 @@ const extractWebhookReply = (data) => {
   return '';
 };
 
+const isMeaningfulFinalReply = (rawReply) => {
+  const normalizedReply = String(rawReply || '').trim();
+  if (!normalizedReply) return false;
+
+  const lowerReply = normalizedReply.toLowerCase();
+  const nonFinalPhrases = [
+    'request accepted',
+    'accepted',
+    'queued',
+    'processing',
+    'in progress',
+    'async',
+    'asynchronous',
+  ];
+
+  // Treat short status-like replies as non-final placeholders.
+  if (normalizedReply.length < 40 && nonFinalPhrases.some((phrase) => lowerReply.includes(phrase))) {
+    return false;
+  }
+
+  return true;
+};
+
 const isAsyncAcceptedResponse = (responseStatus, responseData, rawReply) => {
   const normalizedReply = String(rawReply || '').trim().toLowerCase();
   const normalizedStatusField = String(responseData?.status || '').trim().toLowerCase();
@@ -149,6 +172,11 @@ const isAsyncAcceptedResponse = (responseStatus, responseData, rawReply) => {
   const hasAcceptedIndicator = acceptedIndicators.some(
     (value) => value.includes('accepted') || value.includes('queued') || value.includes('async')
   );
+
+  // If webhook returns 2xx but no meaningful final text, assume async handoff.
+  if (responseStatus >= 200 && responseStatus < 300 && !isMeaningfulFinalReply(rawReply)) {
+    return true;
+  }
 
   return responseStatus >= 200 && responseStatus < 300 && hasAcceptedIndicator;
 };
